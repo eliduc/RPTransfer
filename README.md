@@ -2,9 +2,6 @@
 
 A feature-rich SFTP file transfer client with a dual-pane GUI, built using Python and Tkinter for managing files on remote systems like Raspberry Pi and PCs.
 
-![RPTransfer Screenshot](https://raw.githubusercontent.com/gthank/RPTransfer/main/screenshots/Dark-Theme.png)
-*(Note: You would replace the placeholder URL above with an actual screenshot of your application.)*
-
 ## Key Features
 
 * **Dual-Pane Interface**: Easily manage files with a classic local and remote panel view.
@@ -81,3 +78,6 @@ You need Python 3 and the following libraries.
 Execute the python script from your terminal:
 ```bash
 python RPTransfer.py
+or as an exe file:
+RPTransfer.exe
+
