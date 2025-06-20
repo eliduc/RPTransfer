@@ -1,0 +1,15 @@
+{
+  "devices": {
+    "Device 1": {
+      "type": "pi",
+      "connection": "pi@device1",
+      "directory": "/home/pi/"
+    },
+    "Device 2": {
+      "type": "pi",
+      "connection": "pi@192.168.XX.XX",
+      "directory": "/home/pi/"
+    },
+
+  "last_local_directory": "C:/User/User_Name/Documents"
+}
