@@ -3,6 +3,7 @@
 # Version: 1.5
 #
 # Recent Improvements:
+# - (v1.7) Modified the paths so that ico and json files are picked from the same directory
 # - (v1.6) Added functionality to use .ico and .json file from the same directory the app was launched
 # - (v1.5) Added preservation of file sorting when navigating between directories
 # - (v1.5) Added saving/restoring of last PC directory on exit/startup
@@ -54,14 +55,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger("RPTransfer")
 
-def resource_path(relative_path):
+
+if getattr(sys, 'frozen', False):
+
+    application_path = os.path.dirname(sys.executable)
+else:
+
     try:
-        base_path = sys._MEIPASS
-    except AttributeError:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
-    
-CONFIG_FILE = resource_path("rptrans_config.json")
+        application_path = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        application_path = os.path.abspath(".")
+
+CONFIG_FILE = os.path.join(application_path, 'rptrans_config.json')
+ICON_FILE = os.path.join(application_path, 'rptransfer.ico')
+
 
 class Config:
     """Configuration manager class"""
@@ -3824,8 +3831,10 @@ if __name__ == "__main__":
     #     from ttkthemes import ThemedTk
     #     root = ThemedTk(theme="arc")
     # except ImportError:
-    root = tk.Tk() # Temporarily force the default Tkinter theme
-    root.iconbitmap(resource_path("rptransfer.ico"))
+    root = tk.Tk() 
+
+    if os.path.exists(ICON_FILE):
+        root.iconbitmap(ICON_FILE)
     logger.info("Using default Tk theme for testing dialog size") # Modified logging message
     
     # Configure application
