@@ -1,8 +1,9 @@
 #
 # RPTransfer - Universal File Transfer Application
-# Version: 1.5
+# Version: 1.8
 #
 # Recent Improvements:
+# - (v1.8) Deleted logging
 # - (v1.7) Modified the paths so that ico and json files are picked from the same directory
 # - (v1.6) Added functionality to use .ico and .json file from the same directory the app was launched
 # - (v1.5) Added preservation of file sorting when navigating between directories
@@ -49,7 +50,6 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("file_transfer.log"),
         logging.StreamHandler()
     ]
 )
