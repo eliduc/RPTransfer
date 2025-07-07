@@ -1,10 +1,11 @@
 #
 # RPTransfer - Universal File Transfer Application
-# Version: 1.8
+# Version: 1.8 (No Logging)
 #
 # Recent Improvements:
-# - (v1.8) Deleted logging
-# - (v1.7) Modified the paths so that ico and json files are picked from the same directory
+#
+# - (v1.8) Removed all logging functionality
+# - (v1.7) Bugs and fixes
 # - (v1.6) Added functionality to use .ico and .json file from the same directory the app was launched
 # - (v1.5) Added preservation of file sorting when navigating between directories
 # - (v1.5) Added saving/restoring of last PC directory on exit/startup
@@ -22,7 +23,6 @@ from tkinter import ttk, messagebox, filedialog
 import paramiko
 import os
 import sys
-import logging
 import queue
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -37,7 +37,14 @@ from pathlib import Path
 import functools
 import hashlib
 
+# Dummy logger to replace all logging calls
+class DummyLogger:
+    def info(self, *args, **kwargs): pass
+    def error(self, *args, **kwargs): pass
+    def warning(self, *args, **kwargs): pass
+    def debug(self, *args, **kwargs): pass
 
+logger = DummyLogger()
 
 # Constants
 MAX_WORKERS = 5
@@ -45,30 +52,14 @@ BUFFER_SIZE = 32768  # 32KB chunks for file transfer
 CACHE_TIMEOUT = 60  # seconds
 PAGE_SIZE = 500  # items per page for large directories
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("RPTransfer")
-
-
-if getattr(sys, 'frozen', False):
-
-    application_path = os.path.dirname(sys.executable)
-else:
-
+def resource_path(relative_path):
     try:
-        application_path = os.path.dirname(os.path.abspath(__file__))
-    except NameError:
-        application_path = os.path.abspath(".")
-
-CONFIG_FILE = os.path.join(application_path, 'rptrans_config.json')
-ICON_FILE = os.path.join(application_path, 'rptransfer.ico')
-
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+    
+CONFIG_FILE = resource_path("rptrans_config.json")
 
 class Config:
     """Configuration manager class"""
@@ -98,7 +89,7 @@ class Config:
                 Config.save_devices(default_config)
                 return default_config
         except Exception as e:
-            logger.error(f"Error loading configuration: {str(e)}")
+            messagebox.showerror("Configuration Error", "Error loading configuration file.")
             return {'devices': {}}
     
     @staticmethod
@@ -109,7 +100,7 @@ class Config:
                 json.dump(config, f, indent=2)
             return True
         except Exception as e:
-            logger.error(f"Error saving configuration: {str(e)}")
+            messagebox.showerror("Configuration Error", "Error saving configuration file.")
             return False
     
     @staticmethod
@@ -149,7 +140,6 @@ class Config:
             config['last_local_directory'] = directory
             return Config.save_devices(config)
         except Exception as e:
-            logger.error(f"Error saving last local directory: {str(e)}")
             return False
 
 class CredentialManager:
@@ -161,7 +151,6 @@ class CredentialManager:
             keyring.set_password("rptrans", f"{device_name}_{username}", password)
             return True
         except Exception as e:
-            logger.error(f"Error saving credentials: {str(e)}")
             return False
     
     @staticmethod
@@ -170,7 +159,6 @@ class CredentialManager:
         try:
             return keyring.get_password("rptrans", f"{device_name}_{username}")
         except Exception as e:
-            logger.error(f"Error retrieving credentials: {str(e)}")
             return None
     
     @staticmethod
@@ -180,7 +168,6 @@ class CredentialManager:
             keyring.delete_password("rptrans", f"{device_name}_{username}")
             return True
         except Exception as e:
-            logger.error(f"Error deleting credentials: {str(e)}")
             return False
 
 class FileItem:
@@ -299,7 +286,7 @@ class TransferManager:
                 else:
                     callback(*args, **kwargs)
             except Exception as e:
-                logger.error(f"Error in callback: {str(e)}")
+                pass  # Silently ignore callback errors
     
     def add_task(self, task):
         """Add a transfer task to the queue"""
@@ -372,7 +359,7 @@ class TransferManager:
             try:
                 future.result()
             except Exception as e:
-                logger.error(f"Error waiting for future: {str(e)}")
+                pass  # Silently ignore future errors
     
     def _upload_file(self, local_path, remote_path, task):
         """Upload a file with progress tracking"""
@@ -423,7 +410,6 @@ class TransferManager:
             task.error = str(e)
             self.failed_tasks.append(task)
             self._notify_callbacks('error', task, str(e))
-            logger.error(f"Upload failed: {str(e)}")
             return False
     
     def _download_file(self, remote_path, local_path, task):
@@ -469,7 +455,6 @@ class TransferManager:
             task.error = str(e)
             self.failed_tasks.append(task)
             self._notify_callbacks('error', task, str(e))
-            logger.error(f"Download failed: {str(e)}")
             return False
     
     def _make_remote_dirs(self, path):
@@ -485,7 +470,6 @@ class TransferManager:
             try:
                 self.sftp.mkdir(path)
             except IOError as e:
-                logger.error(f"Failed to create remote directory {path}: {str(e)}")
                 raise
 
 class FileSystemModel:
@@ -516,8 +500,6 @@ class FileSystemModel:
     def connect(self, hostname, username, password, directory, device_type='pc', device_name=None):
         """Connect to remote system"""
         try:
-            logger.info(f"Connecting to {hostname}")
-            
             # Clean up any existing connection
             self.disconnect()
             
@@ -547,16 +529,12 @@ class FileSystemModel:
                 timeout=30
             )
             
-            logger.info("SSH connection successful")
-            
             # Open SFTP session
             self.sftp = self.ssh.open_sftp()
-            logger.info("SFTP session opened")
             
             # Test connection by listing directory
             try:
                 self.sftp.listdir(self.remote_directory)
-                logger.info("Directory listing successful")
             except FileNotFoundError:
                 self.disconnect()
                 raise FileNotFoundError(f"Remote directory not found: {self.remote_directory}")
@@ -574,22 +552,18 @@ class FileSystemModel:
             return True
         
         except paramiko.AuthenticationException:
-            logger.error("Authentication failed")
             self.disconnect()
             raise AuthenticationError("Authentication failed. Please verify username and password.")
         
         except paramiko.SSHException as e:
-            logger.error(f"SSH Protocol error: {str(e)}")
             self.disconnect()
             raise ConnectionError(f"SSH error: {str(e)}")
         
         except socket.error as e:
-            logger.error(f"Socket error: {str(e)}")
             self.disconnect()
             raise ConnectionError(f"Network error: {str(e)}")
         
         except Exception as e:
-            logger.error(f"Connection error: {str(e)}", exc_info=True)
             self.disconnect()
             raise ConnectionError(f"Failed to connect: {str(e)}")
     
@@ -621,10 +595,8 @@ class FileSystemModel:
         if use_cache and cache_key in self.local_cache:
             cache_entry = self.local_cache[cache_key]
             if time.time() - cache_entry['timestamp'] < CACHE_TIMEOUT:
-                logger.debug(f"Using cached local directory: {directory}")
                 return cache_entry['files']
         
-        logger.debug(f"Reading local directory: {directory}")
         files = []
         
         try:
@@ -650,11 +622,9 @@ class FileSystemModel:
             return files
         
         except FileNotFoundError:
-            logger.error(f"Directory not found: {directory}")
             raise
         
         except PermissionError:
-            logger.error(f"Permission denied: {directory}")
             raise
     
     def get_remote_files(self, directory=None, use_cache=True):
@@ -670,10 +640,8 @@ class FileSystemModel:
         if use_cache and cache_key in self.remote_cache:
             cache_entry = self.remote_cache[cache_key]
             if time.time() - cache_entry['timestamp'] < CACHE_TIMEOUT:
-                logger.debug(f"Using cached remote directory: {directory}")
                 return cache_entry['files']
         
-        logger.debug(f"Reading remote directory: {directory}")
         files = []
         
         try:
@@ -696,11 +664,9 @@ class FileSystemModel:
             return files
         
         except FileNotFoundError:
-            logger.error(f"Remote directory not found: {directory}")
             raise
         
         except PermissionError:
-            logger.error(f"Access denied to remote directory: {directory}")
             raise
     
     def get_local_disk_info(self, path=None):
@@ -717,7 +683,7 @@ class FileSystemModel:
                     'volume': path
                 }
         except Exception as e:
-            logger.error(f"Error getting local disk info: {str(e)}")
+            pass
         
         return None
     
@@ -741,7 +707,6 @@ class FileSystemModel:
             error_output = stderr.read().decode().strip()
             
             if error_output:
-                logger.error(f"Error output from df command: {error_output}")
                 return None
             
             # Parse output
@@ -776,7 +741,6 @@ class FileSystemModel:
             return None
         
         except Exception as e:
-            logger.error(f"Error getting remote disk info: {str(e)}", exc_info=True)
             return None
     
     def create_local_directory(self, parent_dir, name):
@@ -791,7 +755,6 @@ class FileSystemModel:
             
             return path
         except Exception as e:
-            logger.error(f"Failed to create local directory: {str(e)}")
             raise
     
     def create_remote_directory(self, parent_dir, name):
@@ -809,7 +772,6 @@ class FileSystemModel:
             
             return path
         except Exception as e:
-            logger.error(f"Failed to create remote directory: {str(e)}")
             raise
     
     def delete_local_item(self, path, recursive=False):
@@ -832,7 +794,6 @@ class FileSystemModel:
             
             return True
         except Exception as e:
-            logger.error(f"Failed to delete local item: {str(e)}")
             raise
     
     def delete_remote_item(self, path, recursive=False):
@@ -863,7 +824,6 @@ class FileSystemModel:
             
             return True
         except Exception as e:
-            logger.error(f"Failed to delete remote item: {str(e)}")
             raise
     
     def _remove_remote_dir_recursive(self, path):
@@ -892,7 +852,6 @@ class FileSystemModel:
             
             return hasher.hexdigest()
         except Exception as e:
-            logger.error(f"Failed to calculate checksum: {str(e)}")
             raise
 
 class AuthenticationError(Exception):
@@ -994,8 +953,6 @@ class DeviceListDialog(tk.Toplevel):
         width = self.winfo_width()
         height = self.winfo_height()
         
-        # print(f"DEBUG: DeviceListDialog final calculated dimensions: width={width}, height={height}") # Optional: remove if not needed
-        
         x_pos = parent.winfo_rootx() + (parent.winfo_width() // 2) - (width // 2)
         y_pos = parent.winfo_rooty() + (parent.winfo_height() // 2) - (height // 2)
         self.geometry(f"{width}x{height}+{x_pos}+{y_pos}")
@@ -1025,15 +982,13 @@ class DeviceListDialog(tk.Toplevel):
 
         try:
             username, hostname = connection_str.split('@', 1)
-            if CredentialManager.get_credentials(hostname, username): # [cite: RPTransfer_1.2.py]
+            if CredentialManager.get_credentials(hostname, username):
                 self.deauthorize_button.config(state=tk.NORMAL)
             else:
                 self.deauthorize_button.config(state=tk.DISABLED)
         except ValueError:
             self.deauthorize_button.config(state=tk.DISABLED)
-            logger.warning(f"Malformed connection string for {device_name_key}: {connection_str}")
         except Exception as e:
-            logger.error(f"Error checking credentials for {device_name_key}: {e}")
             self.deauthorize_button.config(state=tk.DISABLED)
 
     def deauthorize_device(self):
@@ -1063,31 +1018,26 @@ class DeviceListDialog(tk.Toplevel):
 
         if not CredentialManager.get_credentials(hostname, username):
             messagebox.showinfo("Deauthorize", f"No saved credentials found for {device_name_key} ({username}@{hostname}).")
-            self.update_deauthorize_button_state() # Ensure button state is correct
+            self.update_deauthorize_button_state()
             return
 
         if messagebox.askyesno("Confirm Deauthorization", 
                                f"Are you sure you want to remove saved credentials for {device_name_key} ({username}@{hostname})?"):
-            if CredentialManager.delete_credentials(hostname, username): # [cite: RPTransfer_1.2.py]
+            if CredentialManager.delete_credentials(hostname, username):
                 messagebox.showinfo("Success", f"Credentials for {device_name_key} have been removed.")
             else:
                 messagebox.showerror("Error", f"Failed to remove credentials for {device_name_key}.")
             
-            self.update_deauthorize_button_state() # Update button state after attempting deletion
-
-    # Ensure add_device, edit_device, and remove_device also call update_deauthorize_button_state
-    # if they change the selection or the listbox content in a way that <<ListboxSelect>> might not cover all cases.
-    # However, <<ListboxSelect>> should generally handle selection changes.
-    # If list becomes empty after remove_device, on_selection_change won't fire if nothing is selected.
+            self.update_deauthorize_button_state()
     
     def add_device(self):
         """Add a new device configuration"""
-        dialog = DeviceEditDialog(self, title="Add Device") # [cite: RPTransfer_1.2.py]
+        dialog = DeviceEditDialog(self, title="Add Device")
         self.wait_window(dialog)
         
         if dialog.result:
             name, device_type, connection, directory = dialog.result
-            Config.add_device(name, device_type, connection, directory) # [cite: RPTransfer_1.2.py]
+            Config.add_device(name, device_type, connection, directory)
             self.device_configs = Config.load_devices().get('devices', {})
             
             self.listbox.delete(0, tk.END)
@@ -1099,12 +1049,12 @@ class DeviceListDialog(tk.Toplevel):
                     self.listbox.select_set(i)
                     self.listbox.see(i)
                     break
-            self.update_deauthorize_button_state() # Explicit call after list modification
+            self.update_deauthorize_button_state()
 
     def edit_device(self):
         """Edit selected device configuration"""
         if not self.listbox.curselection():
-            messagebox.showwarning("Warning", "Please select a device to edit.") # [cite: RPTransfer_1.2.py]
+            messagebox.showwarning("Warning", "Please select a device to edit.")
             return
         
         selected_index = self.listbox.curselection()[0]
@@ -1118,14 +1068,14 @@ class DeviceListDialog(tk.Toplevel):
             device_type=device_info.get('type', 'pi'),
             connection=device_info.get('connection', ''),
             directory=device_info.get('directory', '')
-        ) # [cite: RPTransfer_1.2.py]
+        )
         self.wait_window(dialog)
         
         if dialog.result:
             name, device_type, connection, directory = dialog.result
             if name != selected_name:
-                Config.remove_device(selected_name) # [cite: RPTransfer_1.2.py]
-            Config.add_device(name, device_type, connection, directory) # [cite: RPTransfer_1.2.py]
+                Config.remove_device(selected_name)
+            Config.add_device(name, device_type, connection, directory)
             self.device_configs = Config.load_devices().get('devices', {})
             
             self.listbox.delete(0, tk.END)
@@ -1137,30 +1087,29 @@ class DeviceListDialog(tk.Toplevel):
                     self.listbox.select_set(i)
                     self.listbox.see(i)
                     break
-            self.update_deauthorize_button_state() # Explicit call after list modification
+            self.update_deauthorize_button_state()
 
     def remove_device(self):
         """Remove selected device configuration"""
         if not self.listbox.curselection():
-            messagebox.showwarning("Warning", "Please select a device to remove.") # [cite: RPTransfer_1.2.py]
+            messagebox.showwarning("Warning", "Please select a device to remove.")
             return
         
         selected_name = self.listbox.get(self.listbox.curselection()[0])
-        device_info = self.device_configs.get(selected_name) # Get info before potential deletion
+        device_info = self.device_configs.get(selected_name)
         
-        if messagebox.askyesno("Confirm", f"Are you sure you want to remove '{selected_name}'?"): # [cite: RPTransfer_1.2.py]
-            Config.remove_device(selected_name) # [cite: RPTransfer_1.2.py]
+        if messagebox.askyesno("Confirm", f"Are you sure you want to remove '{selected_name}'?"):
+            Config.remove_device(selected_name)
             
             # Attempt to remove credentials if device_info was found and connection string is valid
             if device_info and 'connection' in device_info and '@' in device_info['connection']:
                 try:
                     username, hostname = device_info['connection'].split('@', 1)
-                    CredentialManager.delete_credentials(hostname, username) # [cite: RPTransfer_1.2.py]
-                    logger.info(f"Also deleted credentials for removed device {selected_name} ({username}@{hostname})")
+                    CredentialManager.delete_credentials(hostname, username)
                 except ValueError:
-                    logger.warning(f"Could not parse username/hostname to delete credentials for removed device {selected_name}")
+                    pass
                 except Exception as e:
-                    logger.error(f"Error deleting credentials for removed device {selected_name}: {e}")
+                    pass
 
             self.device_configs = Config.load_devices().get('devices', {})
             
@@ -1172,13 +1121,12 @@ class DeviceListDialog(tk.Toplevel):
                 self.listbox.select_set(0)
                 self.listbox.see(0)
             
-            self.update_deauthorize_button_state() # Explicit call after list modification/selection change
+            self.update_deauthorize_button_state()
 
-    # ok and cancel methods remain unchanged from your RPTransfer_1.2.py
     def ok(self, event=None):
         """Handle OK button"""
         if not self.listbox.curselection():
-            messagebox.showwarning("Warning", "Please select a device.") # [cite: RPTransfer_1.2.py]
+            messagebox.showwarning("Warning", "Please select a device.")
             return
         
         selected_name = self.listbox.get(self.listbox.curselection()[0])
@@ -1314,7 +1262,7 @@ class ConnectionDialog(tk.Toplevel):
         # Connection string
         ttk.Label(main_frame, text="Username@Hostname:").grid(row=0, column=0, padx=5, pady=5, sticky='e')
         self.connection_entry = ttk.Entry(main_frame, width=30)
-        self.connection_entry.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky='ew') # Span to align with password + eye
+        self.connection_entry.grid(row=0, column=1, columnspan=2, padx=5, pady=5, sticky='ew')
         if device_type == 'pi':
             self.connection_entry.insert(0, default_connection or "pi@raspberrypi.local")
         else:
@@ -1322,128 +1270,125 @@ class ConnectionDialog(tk.Toplevel):
         
         # Password
         ttk.Label(main_frame, text="Password:").grid(row=1, column=0, padx=5, pady=5, sticky='e')
-        self.password_entry = ttk.Entry(main_frame, show="*", width=25) # Adjusted width
+        self.password_entry = ttk.Entry(main_frame, show="*", width=25)
         self.password_entry.grid(row=1, column=1, padx=(5,0), pady=5, sticky='ew')
         
         # --- Show/Hide Password Toggle ---
         self.show_password_var = tk.BooleanVar(value=False)
         self.show_password_button = ttk.Checkbutton(
             main_frame, 
-            text="👁", # You can use text "Show" or a unicode eye
+            text="👁",
             variable=self.show_password_var,
             command=self.toggle_password_visibility,
-            style="Toolbutton" # Makes it look more like a button if theme supports
+            style="Toolbutton"
         )
         self.show_password_button.grid(row=1, column=2, padx=(0,5), pady=5, sticky='w')
         # --- End Show/Hide Password Toggle ---
         
         # Save password checkbox
-        self.save_password_var = tk.BooleanVar(value=False) #
+        self.save_password_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             main_frame,
             text="Save password securely",
             variable=self.save_password_var
-        ).grid(row=2, column=1, columnspan=2, padx=5, pady=0, sticky='w') # Span to align
+        ).grid(row=2, column=1, columnspan=2, padx=5, pady=0, sticky='w')
         
         # Remote directory
-        ttk.Label(main_frame, text="Remote Directory:").grid(row=3, column=0, padx=5, pady=5, sticky='e') #
-        self.directory_entry = ttk.Entry(main_frame, width=30) #
-        self.directory_entry.grid(row=3, column=1, columnspan=2, padx=5, pady=5, sticky='ew') # Span to align
-        if device_type == 'pi': #
-            self.directory_entry.insert(0, default_directory or "/home/pi/") #
-        else: #
-            self.directory_entry.insert(0, default_directory or "/home/user/") #
+        ttk.Label(main_frame, text="Remote Directory:").grid(row=3, column=0, padx=5, pady=5, sticky='e')
+        self.directory_entry = ttk.Entry(main_frame, width=30)
+        self.directory_entry.grid(row=3, column=1, columnspan=2, padx=5, pady=5, sticky='ew')
+        if device_type == 'pi':
+            self.directory_entry.insert(0, default_directory or "/home/pi/")
+        else:
+            self.directory_entry.insert(0, default_directory or "/home/user/")
         
         # Buttons
-        button_frame = ttk.Frame(main_frame) #
-        button_frame.grid(row=4, column=0, columnspan=3, pady=10) # Span all 3 columns
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=4, column=0, columnspan=3, pady=10)
         
-        ttk.Button(button_frame, text="Connect", command=self.ok, width=10).pack(side=tk.LEFT, padx=5) #
-        ttk.Button(button_frame, text="Cancel", command=self.cancel, width=10).pack(side=tk.LEFT, padx=5) #
+        ttk.Button(button_frame, text="Connect", command=self.ok, width=10).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Cancel", command=self.cancel, width=10).pack(side=tk.LEFT, padx=5)
         
         # Configure column weights for main_frame if needed for better resizing
-        main_frame.columnconfigure(1, weight=1) # Allow password entry to expand
+        main_frame.columnconfigure(1, weight=1)
 
         # Key bindings
-        self.bind('<Return>', lambda e: self.ok()) #
-        self.bind('<Escape>', lambda e: self.cancel()) #
+        self.bind('<Return>', lambda e: self.ok())
+        self.bind('<Escape>', lambda e: self.cancel())
         
-        self.connection_entry.bind('<Return>', lambda e: self.password_entry.focus_set()) #
-        self.password_entry.bind('<Return>', lambda e: self.directory_entry.focus_set()) #
-        self.directory_entry.bind('<Return>', lambda e: self.ok()) #
+        self.connection_entry.bind('<Return>', lambda e: self.password_entry.focus_set())
+        self.password_entry.bind('<Return>', lambda e: self.directory_entry.focus_set())
+        self.directory_entry.bind('<Return>', lambda e: self.ok())
         
         # Position and show dialog
-        self.geometry(f"+{x}+{y}") #
-        self.grab_set() #
-        self.protocol("WM_DELETE_WINDOW", self.cancel) #
+        self.geometry(f"+{x}+{y}")
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
         
         # Get saved password if available
-        self.load_saved_password() #
+        self.load_saved_password()
 
         # Set focus to connection entry if empty, else password if connection has value
         if not self.connection_entry.get():
             self.connection_entry.focus_set()
-        elif not self.password_entry.get(): # If password was loaded, it might have focus from load_saved_password. This is fine.
+        elif not self.password_entry.get():
             self.password_entry.focus_set()
-        else: # If both are filled (e.g. from defaults and saved pass), focus password or connect button
+        else:
             self.password_entry.focus_set()
 
-
-    def toggle_password_visibility(self): #
+    def toggle_password_visibility(self):
         """Toggles the visibility of the password in the entry field."""
-        if self.show_password_var.get(): #
-            self.password_entry.config(show="") #
-        else: #
-            self.password_entry.config(show="*") #
+        if self.show_password_var.get():
+            self.password_entry.config(show="")
+        else:
+            self.password_entry.config(show="*")
         # --- Add this line to restore focus ---
         self.password_entry.focus_set()
     
-    def load_saved_password(self): #
+    def load_saved_password(self):
         """Try to load saved password for the connection"""
         try:
-            connection = self.connection_entry.get().strip() #
-            if '@' in connection: #
-                username, hostname = connection.split('@', 1) #
-                password = CredentialManager.get_credentials(hostname, username) #
-                if password: #
-                    self.password_entry.delete(0, tk.END) #
-                    self.password_entry.insert(0, password) #
-                    self.save_password_var.set(True) #
-                    # Do not focus here, let __init__ handle final focus
-        except Exception as e: # Catching generic exception to prevent dialog load failure
-            logger.error(f"Error loading saved password: {e}")
-            pass #
+            connection = self.connection_entry.get().strip()
+            if '@' in connection:
+                username, hostname = connection.split('@', 1)
+                password = CredentialManager.get_credentials(hostname, username)
+                if password:
+                    self.password_entry.delete(0, tk.END)
+                    self.password_entry.insert(0, password)
+                    self.save_password_var.set(True)
+        except Exception as e:
+            pass
     
-    def ok(self, event=None): #
+    def ok(self, event=None):
         """Handle OK button"""
-        connection = self.connection_entry.get().strip() #
-        password = self.password_entry.get() #
-        directory = self.directory_entry.get().strip() #
-        save_password = self.save_password_var.get() #
+        connection = self.connection_entry.get().strip()
+        password = self.password_entry.get()
+        directory = self.directory_entry.get().strip()
+        save_password = self.save_password_var.get()
         
-        if not all([connection, password, directory]): #
-            messagebox.showerror("Error", "All fields are required!") #
-            return #
+        if not all([connection, password, directory]):
+            messagebox.showerror("Error", "All fields are required!")
+            return
         
         try:
-            username, hostname = connection.split('@', 1) #
-        except ValueError: #
-            messagebox.showerror("Error", "Invalid format. Please use 'username@hostname' format") #
-            return #
+            username, hostname = connection.split('@', 1)
+        except ValueError:
+            messagebox.showerror("Error", "Invalid format. Please use 'username@hostname' format")
+            return
         
-        if not directory.endswith('/'): #
-            directory += '/' #
+        if not directory.endswith('/'):
+            directory += '/'
         
-        if save_password: #
-            CredentialManager.save_credentials(hostname, username, password) #
+        if save_password:
+            CredentialManager.save_credentials(hostname, username, password)
         
-        self.result = (hostname, username, password, directory, save_password) #
-        self.destroy() #
+        self.result = (hostname, username, password, directory, save_password)
+        self.destroy()
     
-    def cancel(self, event=None): #
+    def cancel(self, event=None):
         """Handle Cancel button"""
-        self.result = None #
-        self.destroy() #
+        self.result = None
+        self.destroy()
 
 class OverwriteDialog(tk.Toplevel):
     """Dialog for file overwrite confirmation"""
@@ -1562,8 +1507,6 @@ class ProgressDialog(tk.Toplevel):
         self.geometry("450x350")
         self.geometry(f"+{parent.winfo_rootx() + 50}+{parent.winfo_rooty() + 50}")
         
-        # DON'T use grab_set() - it causes problems with thread callbacks
-        # self.grab_set()  # REMOVED - this was causing the hang!
         self.protocol("WM_DELETE_WINDOW", self.cancel_transfer)
         
         # Initialize counters
@@ -2387,54 +2330,24 @@ class FileTransfer:
     def on_local_selection(self, event):
         """Handle local file selection"""
         self.local_selected_item = self.local_tree.selection()
-        if self.active_panel != 'local':
-            self.local_tree.selection_remove(self.local_selected_item)
     
     def on_remote_selection(self, event):
         """Handle remote file selection"""
         self.remote_selected_item = self.remote_tree.selection()
-        if self.active_panel != 'remote':
-            self.remote_tree.selection_remove(self.remote_selected_item)
     
     def set_active_panel(self, panel):
         """Set the active panel (local or remote)"""
         if panel == self.active_panel:
             return
         
-        # Save current selection
-        if self.active_panel == 'local':
-            self.local_selected_item = self.local_tree.selection()
-            self.local_tree.selection_remove(self.local_tree.selection())
-        else:
-            self.remote_selected_item = self.remote_tree.selection()
-            self.remote_tree.selection_remove(self.remote_tree.selection())
-        
-        # Update active panel
         self.active_panel = panel
         
-        # Restore selection
         if panel == 'local':
-            if self.local_selected_item:
-                self.local_tree.selection_set(self.local_selected_item)
-                self.local_tree.focus(self.local_selected_item[0])
-            else:
-                if '..' in self.local_item_id_map:
-                    self.local_selected_item = (self.local_item_id_map['..'],)
-                    self.local_tree.selection_set(self.local_selected_item)
-                    self.local_tree.focus(self.local_selected_item[0])
             self.local_tree.focus_set()
         else:
-            if self.remote_selected_item:
-                self.remote_tree.selection_set(self.remote_selected_item)
-                self.remote_tree.focus(self.remote_selected_item[0])
-            else:
-                if '..' in self.remote_item_id_map:
-                    self.remote_selected_item = (self.remote_item_id_map['..'],)
-                    self.remote_tree.selection_set(self.remote_selected_item)
-                    self.remote_tree.focus(self.remote_selected_item[0])
-            self.remote_tree.focus_set()
+            if self.model.is_connected:
+                self.remote_tree.focus_set()
         
-        # Update status
         self.status_var.set(f"Active panel: {'Local' if panel == 'local' else 'Remote'}")
     
     def on_local_path_enter(self, event):
@@ -2498,7 +2411,7 @@ class FileTransfer:
             else:
                 self.remote_disk_label.config(text="Volume: N/A  Free: N/A")
         except Exception as e:
-            logger.error(f"Error updating disk info: {str(e)}")
+            pass
     
     def load_local_files(self, use_cache=True):
         """Load files from local directory"""
@@ -2856,7 +2769,6 @@ class FileTransfer:
                     )
         
         except Exception as e:
-            logger.error(f"Error in show_device_list: {str(e)}")
             messagebox.showerror("Error", f"An error occurred: {str(e)}")
     
     def connect_to_remote_with_credentials(self, hostname, username, password, dest_dir, device_type='pc', device_name=None):
@@ -2888,15 +2800,12 @@ class FileTransfer:
             self.update_disk_info()
             
         except AuthenticationError as e:
-            logger.error(f"Authentication failed: {str(e)}")
             messagebox.showerror("Connection Error", str(e))
             
         except ConnectionError as e:
-            logger.error(f"Connection error: {str(e)}")
             messagebox.showerror("Connection Error", str(e))
             
         except Exception as e:
-            logger.error(f"Unexpected error during connection: {str(e)}", exc_info=True)
             messagebox.showerror("Connection Error", f"Failed to connect: {str(e)}")
     
     def connect_to_remote(self):
@@ -2904,8 +2813,6 @@ class FileTransfer:
         if self.model.is_connected:
             messagebox.showinfo("Info", "Already connected to remote device.")
             return
-        
-        logger.info("Starting direct connection process...")
         
         # Position dialog
         x = self.connect_button.winfo_rootx()
@@ -2928,7 +2835,6 @@ class FileTransfer:
             self.model.disconnect()
             device_type = self.model.device_type or "device"
             
-            logger.info(f"Disconnected from remote {device_type}")
             messagebox.showinfo("Disconnected", f"Disconnected from remote {device_type}.")
             
             # Update UI
@@ -2942,7 +2848,6 @@ class FileTransfer:
             self.status_var.set("Disconnected from remote device")
             
         except Exception as e:
-            logger.error(f"Error during disconnect: {str(e)}")
             messagebox.showerror("Error", f"Error during disconnect: {str(e)}")
                 
     def upload_files(self):
@@ -2992,7 +2897,7 @@ class FileTransfer:
                                 total_size += size
                                 files_to_transfer.append((full_local_file, full_remote_file, size))
                             except Exception as e:
-                                logger.error(f"Error getting file info for {full_local_file}: {str(e)}")
+                                pass
                 
                 else:
                     # Handle single file upload
@@ -3089,8 +2994,6 @@ class FileTransfer:
             
         except Exception as e:
             messagebox.showerror("Error", f"Upload operation failed: {str(e)}")
-            logger.error(f"Upload operation failed: {str(e)}", exc_info=True)
-
 
     def download_files(self):
         """Download selected files from remote device"""
@@ -3140,7 +3043,7 @@ class FileTransfer:
                                 total_size += size
                                 files_to_transfer.append((full_remote_file, full_local_file, size))
                             except Exception as e:
-                                logger.error(f"Error getting file info for {full_remote_file}: {str(e)}")
+                                pass
                 
                 else:
                     # Handle single file download
@@ -3156,7 +3059,7 @@ class FileTransfer:
                             total_size += size
                             files_to_transfer.append((remote_path, local_path, size))
                     except Exception as e:
-                        logger.error(f"Error getting info for {filename}: {str(e)}")
+                        pass
             
             # Check if any files to transfer
             if not files_to_transfer:
@@ -3236,9 +3139,7 @@ class FileTransfer:
             
         except Exception as e:
             messagebox.showerror("Error", f"Download operation failed: {str(e)}")
-            logger.error(f"Download operation failed: {str(e)}", exc_info=True)
 
-    
     def on_transfer_complete(self, progress_dialog):
         """Handle transfer completion"""
         self.master.after(500, lambda: self.finish_transfer(progress_dialog))
@@ -3257,7 +3158,7 @@ class FileTransfer:
             self.status_var.set("Transfer completed")
             
         except Exception as e:
-            logger.error(f"Error in finish_transfer: {str(e)}")
+            pass
     
     def create_directory(self):
         """Create a new directory in the active panel"""
@@ -3325,7 +3226,6 @@ class FileTransfer:
                 
                 if 'file' in self.local_tree.item(item)['tags']:
                     # Delete file
-                    # values[0] already contains the full filename with extension
                     filename = str(values[0])
                     
                     try:
@@ -3379,7 +3279,6 @@ class FileTransfer:
                 
                 if 'file' in self.remote_tree.item(item)['tags']:
                     # Delete file
-                    # values[0] already contains the full filename with extension
                     filename = str(values[0])
                     
                     try:
@@ -3656,7 +3555,6 @@ class FileTransfer:
             
         except Exception as e:
             messagebox.showerror("Error", f"Synchronization failed: {str(e)}")
-            logger.error(f"Synchronization failed: {str(e)}", exc_info=True)
     
     def copy_selected_path(self):
         """Copy the path of selected item to clipboard"""
@@ -3731,7 +3629,7 @@ class FileTransfer:
         """Show about dialog"""
         messagebox.showinfo(
             "About Universal File Transfer",
-            "Universal File Transfer 2.0\n\n"
+            "Universal File Transfer 1.8\n\n"
             "A tool for transferring files between local and remote systems.\n\n"
             "Features:\n"
             "- Secure file transfers via SFTP\n"
@@ -3815,7 +3713,7 @@ def walk_remote_dir(sftp, remote_dir):
             else:
                 files.append(entry.filename)
     except Exception as e:
-        logger.error(f"Error listing {remote_dir}: {str(e)}")
+        pass
     
     yield (remote_dir, dirs, files)
     
@@ -3826,39 +3724,30 @@ def walk_remote_dir(sftp, remote_dir):
 
 # Main entry point
 if __name__ == "__main__":
-    # Set up nicer looking theme if available
-    # try:
-    #     from ttkthemes import ThemedTk
-    #     root = ThemedTk(theme="arc")
-    # except ImportError:
-    root = tk.Tk() 
-
-    if os.path.exists(ICON_FILE):
-        root.iconbitmap(ICON_FILE)
-    logger.info("Using default Tk theme for testing dialog size") # Modified logging message
+    root = tk.Tk()
+    
+    # Try to load icon safely
+    try:
+        icon_path = resource_path("rptransfer.ico")
+        if os.path.exists(icon_path):
+            root.iconbitmap(icon_path)
+    except Exception:
+        pass
     
     # Configure application
-    root.title("Universal File Transfer") # RPTransfer_1.2.py
-    
-    # Set app icon if available
-    try:
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico") # RPTransfer_1.2.py
-        if os.path.exists(icon_path): # RPTransfer_1.2.py
-            root.iconbitmap(icon_path) # RPTransfer_1.2.py
-    except Exception: # RPTransfer_1.2.py
-        pass # RPTransfer_1.2.py
+    root.title("Universal File Transfer")
     
     # Create and start application
-    app = FileTransfer(root) # RPTransfer_1.2.py
-    root.protocol("WM_DELETE_WINDOW", app.on_closing) # RPTransfer_1.2.py
+    app = FileTransfer(root)
+    root.protocol("WM_DELETE_WINDOW", app.on_closing)
     
     # Center window on screen
-    root.update_idletasks() # RPTransfer_1.2.py
-    width = root.winfo_width() # RPTransfer_1.2.py
-    height = root.winfo_height() # RPTransfer_1.2.py
-    x = (root.winfo_screenwidth() // 2) - (width // 2) # RPTransfer_1.2.py
-    y = (root.winfo_screenheight() // 2) - (height // 2) # RPTransfer_1.2.py
-    root.geometry(f"{width}x{height}+{x}+{y}") # RPTransfer_1.2.py
+    root.update_idletasks()
+    width = root.winfo_width()
+    height = root.winfo_height()
+    x = (root.winfo_screenwidth() // 2) - (width // 2)
+    y = (root.winfo_screenheight() // 2) - (height // 2)
+    root.geometry(f"{width}x{height}+{x}+{y}")
     
     # Start main loop
-    root.mainloop() # RPTransfer_1.2.py
+    root.mainloop()

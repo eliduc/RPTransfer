@@ -5,7 +5,7 @@ a = Analysis(
     ['RPTransfer.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('rptrans_config.json', '.'), ('rptransfer.ico', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
