@@ -1,9 +1,10 @@
 #
 # RPTransfer - Universal File Transfer Application
-# Version: 1.8 (No Logging)
+# Version: 1.9
 #
 # Recent Improvements:
 #
+# - (v1.9) Corrected Cancel while uploading/downloading files
 # - (v1.8) Removed all logging functionality
 # - (v1.7) Bugs and fixes
 # - (v1.6) Added functionality to use .ico and .json file from the same directory the app was launched
@@ -318,14 +319,20 @@ class TransferManager:
         for task in self.active_tasks.values():
             if task.status == "pending":
                 task.status = "cancelled"
-    
+        
     def _process_queue(self):
         """Process the transfer queue"""
         futures = []
         
         while not self.cancelled:
             try:
-                task = self.queue.get(timeout=0.5)
+                task = self.queue.get(timeout=0.1)  # ИЗМЕНЕНО: с 0.5 на 0.1 для быстрой реакции
+                
+                # ДОБАВЛЕНО: Проверить отмену перед запуском задачи
+                if self.cancelled:
+                    task.status = "cancelled"
+                    self.queue.task_done()
+                    break
                 
                 # Submit the task to the thread pool
                 if task.is_upload:
@@ -347,24 +354,34 @@ class TransferManager:
                 self.queue.task_done()
             
             except queue.Empty:
+                # ДОБАВЛЕНО: Проверить отмену чаще
+                if self.cancelled:
+                    break
+                    
                 # Check if all tasks are done
                 if self.queue.empty() and all(future.done() for future in futures):
-                    # Wait a moment to ensure all callbacks have been processed
                     time.sleep(0.1)
-                    self._notify_callbacks('all_complete')
+                    if not self.cancelled:  # ДОБАВЛЕНО: Не вызывать all_complete если отменено
+                        self._notify_callbacks('all_complete')
                     break
         
-        # Wait for all tasks to complete
-        for future in futures:
-            try:
-                future.result()
-            except Exception as e:
-                pass  # Silently ignore future errors
-    
+        # ДОБАВЛЕНО: Если отменено, дождаться завершения активных задач
+        if self.cancelled:
+            for future in futures:
+                try:
+                    future.result(timeout=5.0)  # Дать максимум 5 секунд на завершение
+                except Exception:
+                    pass
+        
     def _upload_file(self, local_path, remote_path, task):
         """Upload a file with progress tracking"""
         try:
             task.status = "in_progress"
+            
+            # ДОБАВЛЕНО: Проверить отмену перед началом
+            if self.cancelled:
+                task.status = "cancelled"
+                return False
             
             # Create remote directories if needed (with lock)
             remote_dir = os.path.dirname(remote_path)
@@ -373,6 +390,11 @@ class TransferManager:
                     self.sftp.chdir(remote_dir)
                 except IOError:
                     self._make_remote_dirs(remote_dir)
+            
+            # ДОБАВЛЕНО: Проверить отмену после создания директорий
+            if self.cancelled:
+                task.status = "cancelled"
+                return False
             
             # Use custom implementation with chunked uploads
             with open(local_path, 'rb') as local_file:
@@ -386,6 +408,12 @@ class TransferManager:
                             remote_file.write(chunk)
                         task.bytes_transferred += len(chunk)
                         self._notify_callbacks('progress', task)
+                        
+                        # ДОБАВЛЕНО: Дополнительная проверка отмены каждые несколько блоков
+                        if task.bytes_transferred % (BUFFER_SIZE * 10) == 0:
+                            if self.cancelled:
+                                break
+                        
                         chunk = local_file.read(BUFFER_SIZE)
                 finally:
                     with self._sftp_lock:
@@ -395,7 +423,7 @@ class TransferManager:
                 task.status = "cancelled"
                 with self._sftp_lock:
                     try:
-                        self.sftp.remove(remote_path)
+                        self.sftp.remove(remote_path)  # ДОБАВЛЕНО: Удалить частично загруженный файл
                     except:
                         pass
             else:
@@ -411,14 +439,24 @@ class TransferManager:
             self.failed_tasks.append(task)
             self._notify_callbacks('error', task, str(e))
             return False
-    
+        
     def _download_file(self, remote_path, local_path, task):
         """Download a file with progress tracking"""
         try:
             task.status = "in_progress"
             
+            # ДОБАВЛЕНО: Проверить отмену перед началом
+            if self.cancelled:
+                task.status = "cancelled"
+                return False
+            
             # Create local directories if needed
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            
+            # ДОБАВЛЕНО: Проверить отмену после создания директорий
+            if self.cancelled:
+                task.status = "cancelled"
+                return False
             
             # Use custom implementation with chunked downloads
             with self._sftp_lock:
@@ -431,6 +469,12 @@ class TransferManager:
                         local_file.write(chunk)
                         task.bytes_transferred += len(chunk)
                         self._notify_callbacks('progress', task)
+                        
+                        # ДОБАВЛЕНО: Дополнительная проверка отмены каждые несколько блоков
+                        if task.bytes_transferred % (BUFFER_SIZE * 10) == 0:
+                            if self.cancelled:
+                                break
+                        
                         with self._sftp_lock:
                             chunk = remote_file.read(BUFFER_SIZE)
             finally:
@@ -440,7 +484,7 @@ class TransferManager:
             if self.cancelled:
                 task.status = "cancelled"
                 try:
-                    os.remove(local_path)
+                    os.remove(local_path)  # ДОБАВЛЕНО: Удалить частично скачанный файл
                 except:
                     pass
             else:
@@ -1535,11 +1579,14 @@ class ProgressDialog(tk.Toplevel):
     def current_file(self, value):
         with self._lock:
             self._current_file = value
-    
+        
     def cancel_transfer(self):
         """Cancel the transfer operation"""
         self.cancel_flag = True
         self.file_status.set("Cancelling...")
+        # ДОБАВЛЕНО: Связь с TransferManager
+        if hasattr(self, 'transfer_manager') and self.transfer_manager:
+            self.transfer_manager.cancel_all()
         
     def update_file_progress(self, task):
         """Update progress for a specific file (thread-safe)"""
@@ -2849,7 +2896,7 @@ class FileTransfer:
             
         except Exception as e:
             messagebox.showerror("Error", f"Error during disconnect: {str(e)}")
-                
+                    
     def upload_files(self):
         """Upload selected files to remote device"""
         if not self.model.is_connected:
@@ -2867,7 +2914,7 @@ class FileTransfer:
             files_to_transfer = []
             total_size = 0
             
-            # Process all selected items
+            # Process all selected items (код остается тот же)
             for item in selected_items:
                 values = self.local_tree.item(item)['values']
                 if values[0] == '..':
@@ -2928,6 +2975,9 @@ class FileTransfer:
             # Show progress dialog (non-modal)
             progress_dialog = ProgressDialog(self.master, total_size, len(files_to_transfer))
             
+            # ДОБАВЛЕНО: Связь progress_dialog с transfer_manager
+            progress_dialog.transfer_manager = self.model.transfer_manager
+            
             # Configure transfer manager callbacks
             transfer_manager = self.model.transfer_manager
             transfer_manager.overwrite_all = False
@@ -2946,7 +2996,7 @@ class FileTransfer:
             transfer_manager.add_callback('file_complete', lambda task: progress_dialog.file_completed(task))
             transfer_manager.add_callback('all_complete', lambda: self.on_transfer_complete(progress_dialog))
             
-            # Process files
+            # Process files (остальной код остается тот же)
             for local_path, remote_path, size in files_to_transfer:
                 # Check for file existence
                 file_exists = False
@@ -3008,7 +3058,7 @@ class FileTransfer:
             return
         
         try:
-            # Collect files to transfer
+            # Collect files to transfer (код сбора файлов остается тот же)
             files_to_transfer = []
             total_size = 0
             
@@ -3078,7 +3128,10 @@ class FileTransfer:
             # Show progress dialog (non-modal)
             progress_dialog = ProgressDialog(self.master, total_size, len(files_to_transfer))
             
-            # Configure transfer manager callbacks
+            # ДОБАВЛЕНО: Связь progress_dialog с transfer_manager
+            progress_dialog.transfer_manager = self.model.transfer_manager
+            
+            # Configure transfer manager callbacks (остальной код остается тот же)
             transfer_manager = self.model.transfer_manager
             transfer_manager.overwrite_all = False
             transfer_manager.skip_all = False
