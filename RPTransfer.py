@@ -1,9 +1,10 @@
 #
 # RPTransfer - Universal File Transfer Application
-# Version: 1.9
+# Version: 1.10
 #
 # Recent Improvements:
 #
+# - (v1.10) Corrected for proper functioning of exe file
 # - (v1.9) Corrected Cancel while uploading/downloading files
 # - (v1.8) Removed all logging functionality
 # - (v1.7) Bugs and fixes
@@ -38,6 +39,7 @@ from pathlib import Path
 import functools
 import hashlib
 
+
 # Dummy logger to replace all logging calls
 class DummyLogger:
     def info(self, *args, **kwargs): pass
@@ -54,6 +56,22 @@ CACHE_TIMEOUT = 60  # seconds
 PAGE_SIZE = 500  # items per page for large directories
 
 def resource_path(relative_path):
+    """Get absolute path to resource, with special handling for config files"""
+    
+    # For config files, always use external directory (exe directory)
+    if relative_path.endswith('.json'):
+        try:
+            if getattr(sys, 'frozen', False):
+                # Running as PyInstaller exe - use exe's directory
+                base_path = os.path.dirname(sys.executable)
+            else:
+                # Running as script - use script's directory
+                base_path = os.path.dirname(os.path.abspath(__file__))
+        except Exception:
+            base_path = os.getcwd()
+        return os.path.join(base_path, relative_path)
+    
+    # For other files (like icons), use bundled resources
     try:
         base_path = sys._MEIPASS
     except AttributeError:
@@ -66,7 +84,7 @@ class Config:
     """Configuration manager class"""
     @staticmethod
     def load_devices():
-        """Load device configuration from file or return defaults"""
+        """Load device configuration from file or create default"""
         try:
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE, 'r') as f:
@@ -76,7 +94,7 @@ class Config:
                         config['devices'] = {}
                     return config
             else:
-                # Default configuration
+                # Create default configuration file
                 default_config = {
                     'devices': {
                         'FR': {'type': 'pi', 'connection': 'pi@fr', 'directory': '/home/pi/GP/'},
@@ -90,8 +108,13 @@ class Config:
                 Config.save_devices(default_config)
                 return default_config
         except Exception as e:
-            messagebox.showerror("Configuration Error", "Error loading configuration file.")
-            return {'devices': {}}
+            # If file is corrupted, create a minimal config
+            minimal_config = {'devices': {}}
+            try:
+                Config.save_devices(minimal_config)
+            except:
+                pass
+            return minimal_config
     
     @staticmethod
     def save_devices(config):
@@ -268,6 +291,13 @@ class TransferManager:
         }
         # Lock for SFTP operations
         self._sftp_lock = threading.Lock()
+    
+    def shutdown(self):
+        """Gracefully shuts down the thread pool executor."""
+        logger.info("Shutting down transfer manager thread pool.")
+        # Не принимать новые задачи и дождаться завершения существующих
+        self.executor.shutdown(wait=True)
+        logger.info("Thread pool shut down.")
     
     def add_callback(self, event_type, callback):
         """Add a callback for transfer events"""
@@ -2914,7 +2944,7 @@ class FileTransfer:
             files_to_transfer = []
             total_size = 0
             
-            # Process all selected items (код остается тот же)
+            # Process all selected items
             for item in selected_items:
                 values = self.local_tree.item(item)['values']
                 if values[0] == '..':
@@ -2996,7 +3026,7 @@ class FileTransfer:
             transfer_manager.add_callback('file_complete', lambda task: progress_dialog.file_completed(task))
             transfer_manager.add_callback('all_complete', lambda: self.on_transfer_complete(progress_dialog))
             
-            # Process files (остальной код остается тот же)
+            # Process files
             for local_path, remote_path, size in files_to_transfer:
                 # Check for file existence
                 file_exists = False
@@ -3058,7 +3088,7 @@ class FileTransfer:
             return
         
         try:
-            # Collect files to transfer (код сбора файлов остается тот же)
+            # Collect files to transfer
             files_to_transfer = []
             total_size = 0
             
@@ -3131,7 +3161,7 @@ class FileTransfer:
             # ДОБАВЛЕНО: Связь progress_dialog с transfer_manager
             progress_dialog.transfer_manager = self.model.transfer_manager
             
-            # Configure transfer manager callbacks (остальной код остается тот же)
+            # Configure transfer manager callbacks
             transfer_manager = self.model.transfer_manager
             transfer_manager.overwrite_all = False
             transfer_manager.skip_all = False
@@ -3682,7 +3712,7 @@ class FileTransfer:
         """Show about dialog"""
         messagebox.showinfo(
             "About Universal File Transfer",
-            "Universal File Transfer 1.8\n\n"
+            "Universal File Transfer 1.9\n\n"
             "A tool for transferring files between local and remote systems.\n\n"
             "Features:\n"
             "- Secure file transfers via SFTP\n"
@@ -3713,19 +3743,21 @@ class FileTransfer:
             text += f"{key.ljust(10)} - {desc}\n"
         
         messagebox.showinfo("Keyboard Shortcuts", text)
-    
+        
     def on_closing(self):
         """Handle application closing"""
-        # Save last local directory
+        # Сохраняем последнюю локальную директорию
         Config.save_last_local_directory(self.model.local_directory)
-        
-        # Disconnect from remote if connected
-        if self.model.is_connected:
-            self.model.disconnect()
-        
-        # Close application
-        self.master.destroy()
 
+        # Отключаемся от удаленного устройства если подключены
+        if self.model.is_connected:
+            # ПРИНУДИТЕЛЬНО ОСТАНАВЛИВАЕМ ПУЛ ПОТОКОВ
+            if self.model.transfer_manager:
+                self.model.transfer_manager.shutdown()
+            self.model.disconnect()
+
+        # Закрываем приложение
+        self.master.destroy()
 
 # Utility functions
 def normalize_path(path, is_remote=False):
