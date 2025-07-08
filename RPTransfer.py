@@ -40,6 +40,8 @@ import functools
 import hashlib
 
 
+VERSION = "1.10"
+
 # Dummy logger to replace all logging calls
 class DummyLogger:
     def info(self, *args, **kwargs): pass
@@ -2242,6 +2244,14 @@ class FileTransfer:
         )
         self.device_list_button.pack(side=tk.LEFT)
     
+        self.version_label = ttk.Label(
+            self.connection_frame, 
+            text=f"Version {VERSION}", 
+            font=("TkDefaultFont", 8),  # Мелкий шрифт
+            foreground="gray"
+        )
+        self.version_label.pack(side=tk.RIGHT, padx=(10, 0))
+    
     def create_navigation_frame(self):
         """Create navigation controls"""
         self.nav_frame = ttk.Frame(self.master)
@@ -3712,7 +3722,7 @@ class FileTransfer:
         """Show about dialog"""
         messagebox.showinfo(
             "About Universal File Transfer",
-            "Universal File Transfer 1.9\n\n"
+            f"Universal File Transfer {VERSION}\n\n"
             "A tool for transferring files between local and remote systems.\n\n"
             "Features:\n"
             "- Secure file transfers via SFTP\n"

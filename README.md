@@ -78,6 +78,33 @@ You need Python 3 and the following libraries.
 Execute the python script from your terminal:
 ```bash
 python RPTransfer.py
+```
 or as an exe file:
+```bash
 RPTransfer.exe
+```
 
+## Troubleshooting
+
+### Error Popup on Application Exit
+
+On some systems, particularly due to conflicts with security software (like antivirus programs), you might encounter a warning popup titled "Failed to remove temporary directory" a few seconds after closing the application. This happens because the security software locks a file while the application is trying to clean up its temporary resources.
+
+This issue can be reliably solved by building the application in **directory mode** instead of one-file mode. This creates a folder containing the application and its dependencies, which avoids the use of temporary directories on startup.
+
+To do this, use the following build command:
+```sh
+pyinstaller --noconfirm --onedir --windowed --icon=rptransfer.ico --add-data "rptransfer.ico;." RPTransfer.py
+```
+
+### Connection Issues
+
+* **Authentication Failed**: Verify your username and password are correct. Check if the remote device requires key-based authentication.
+* **Connection Timeout**: Ensure the remote device is accessible on the network and SSH service is running.
+* **Permission Denied**: Check that your user account has appropriate permissions on the remote directory.
+
+### Performance Tips
+
+* For large file transfers, ensure stable network connection to avoid interruptions.
+* The application uses multi-threading for transfers, but SFTP operations are serialized to maintain connection stability.
+* Consider using directory synchronization for keeping folders in sync rather than manual file copying.
