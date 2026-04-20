@@ -1,9 +1,16 @@
 #
 # RPTransfer - Universal File Transfer Application
-# Version: 1.10
+# Version: 1.11
 #
 # Recent Improvements:
 #
+# - (v1.11) Fixed shutdown race (close window during transfer no longer can
+#           raise "cannot schedule new futures" in the worker thread);
+#           walk_remote_dir narrows exception handling to IOError/OSError so
+#           programming errors surface instead of silently yielding empty
+#           directories; corrupted rptrans_config.json is now backed up to
+#           rptrans_config.json.bak before defaults are rewritten; removed
+#           unused functools import; tidied one redundant f-string.
 # - (v1.10) Corrected for proper functioning of exe file
 # - (v1.9) Corrected Cancel while uploading/downloading files
 # - (v1.8) Removed all logging functionality
@@ -36,11 +43,10 @@ import socket
 import json
 import keyring
 from pathlib import Path
-import functools
 import hashlib
 
 
-VERSION = "1.10"
+VERSION = "1.11"
 
 # Dummy logger to replace all logging calls
 class DummyLogger:
@@ -109,12 +115,19 @@ class Config:
                 }
                 Config.save_devices(default_config)
                 return default_config
-        except Exception as e:
-            # If file is corrupted, create a minimal config
+        except Exception:
+            # Corrupted config — keep a .bak copy before overwriting so the
+            # user's device list is recoverable.
+            try:
+                if os.path.exists(CONFIG_FILE):
+                    backup = CONFIG_FILE + '.bak'
+                    shutil.copy2(CONFIG_FILE, backup)
+            except Exception:
+                pass
             minimal_config = {'devices': {}}
             try:
                 Config.save_devices(minimal_config)
-            except:
+            except Exception:
                 pass
             return minimal_config
     
@@ -297,6 +310,9 @@ class TransferManager:
     def shutdown(self):
         """Gracefully shuts down the thread pool executor."""
         logger.info("Shutting down transfer manager thread pool.")
+        # Signal the queue worker to stop BEFORE closing the executor so it
+        # cannot call executor.submit() on a shutting-down pool.
+        self.cancelled = True
         # Не принимать новые задачи и дождаться завершения существующих
         self.executor.shutdown(wait=True)
         logger.info("Thread pool shut down.")
@@ -366,17 +382,22 @@ class TransferManager:
                     self.queue.task_done()
                     break
                 
-                # Submit the task to the thread pool
-                if task.is_upload:
-                    future = self.executor.submit(
-                        self._upload_file, task.source_path, task.dest_path, task
-                    )
-                else:
-                    future = self.executor.submit(
-                        self._download_file, task.source_path, task.dest_path, task
-                    )
-                
-                futures.append(future)
+                # Submit the task to the thread pool. Guard against the rare
+                # case where the executor has just been shut down.
+                try:
+                    if task.is_upload:
+                        future = self.executor.submit(
+                            self._upload_file, task.source_path, task.dest_path, task
+                        )
+                    else:
+                        future = self.executor.submit(
+                            self._download_file, task.source_path, task.dest_path, task
+                        )
+                    futures.append(future)
+                except RuntimeError:
+                    task.status = "cancelled"
+                    self.queue.task_done()
+                    break
                 
                 # Clean up completed futures
                 for future in list(futures):
@@ -3493,7 +3514,7 @@ class FileTransfer:
             
             # Prepare report
             report = [
-                f"Directory Comparison Report",
+                "Directory Comparison Report",
                 f"Local: {self.model.local_directory}",
                 f"Remote: {self.model.remote_directory}",
                 f"\n{len(only_local)} files/folders only in local directory:",
@@ -3797,21 +3818,27 @@ def format_time(seconds):
         return f"{hours:.1f} hours"
 
 def walk_remote_dir(sftp, remote_dir):
-    """Generator to walk remote directory structure"""
+    """Generator to walk remote directory structure.
+
+    Per-directory IOError/OSError (permission denied, transient network
+    glitch) are tolerated so that a single unreadable subdirectory does not
+    abort the whole walk. Programming errors / other exceptions propagate.
+    """
     dirs = []
     files = []
-    
+
     try:
         for entry in sftp.listdir_attr(remote_dir):
             if stat.S_ISDIR(entry.st_mode):
                 dirs.append(entry.filename)
             else:
                 files.append(entry.filename)
-    except Exception as e:
+    except (IOError, OSError):
+        # Unreadable remote dir — yield what we have (empty) and move on.
         pass
-    
+
     yield (remote_dir, dirs, files)
-    
+
     for d in dirs:
         new_dir = os.path.join(remote_dir, d).replace('\\', '/')
         yield from walk_remote_dir(sftp, new_dir)
