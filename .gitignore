@@ -1,1 +1,10 @@
 rptrans_config.json
+rptrans_config.json.bak
+
+# Build artefacts
+build-venv/
+build/
+dist/
+tools/
+__pycache__/
+*.pyc
